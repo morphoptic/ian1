@@ -22,6 +22,8 @@ import argparse
 from math import ceil
 import signal
 
+n_read_err_reset = 1
+
 parser = argparse.ArgumentParser()
 parser.add_argument("interval_seconds", type=float, 
                     help="Interval between readings start.  If faster than sensors can go, just reads as fast as possible.")
@@ -45,21 +47,22 @@ if not measure_temp and not measure_dist:
 
 meas_str = ""
 head_str = ""
-if measure_dist:
-    meas_str+="_distance"
-    head_str+="\tdistance_meters"
-    
-    import pexpect
-    
+def connect_leica():
     # Run gatttool interactively.
     gatcmd = 'gatttool -b %s -t random -I' % addr
-    gatt = pexpect.spawn(gatcmd)
+    while True:
+        try:
+            gatt = pexpect.spawn(gatcmd)
 
-    # Connect to the device.
-    gatt.sendline('connect')
-    gatt.expect('Connection successful', timeout=5)
+            # Connect to the device.
+            gatt.sendline('connect')
+            gatt.expect('Connection successful', timeout=2)
+            break
+        except pexpect.TIMEOUT:
+            log('Retrying Leica connect...')
+            pass
+
     time.sleep(1)
-
     print('Leica connected')
 
     # Enable Indications
@@ -68,6 +71,16 @@ if measure_dist:
     gatt.sendline('char-write-cmd 0x000f 0200')
     gatt.sendline('char-write-cmd 0x0012 0200')
     time.sleep(1)
+
+    return gatt
+
+if measure_dist:
+    meas_str+="_distance"
+    head_str+="\tdistance_meters"
+    
+    import pexpect
+
+    gatt = connect_leica()
     
 if measure_temp:
     meas_str+="_temperature"
@@ -108,6 +121,7 @@ log("t_seconds_post_read"+head_str)
 # Enter main loop.
 i=0
 t_0 = time.perf_counter()
+n_errs = 0
 while True:
     if measure_dist:
         try:
@@ -125,6 +139,14 @@ while True:
             distance="READ_ERROR"
             #input("Leica read error.  Press Enter to resume measurements or CTRL+C to end")
             i = ceil( (time.perf_counter() - t_0)/int_sec ) 
+
+            n_errs += 1
+            if n_errs == n_read_err_reset:
+                log("Num read errors reached, attempting to close and re-open Leica")
+                gatt.close()
+                gatt = connect_leica() 
+                n_errs = 0
+
     if measure_temp:
         try:
             temp = max31855.temperature
